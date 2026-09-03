@@ -241,14 +241,17 @@ rest of the log.
 documentation and repository trees on purpose: these are copies, and the
 canonical pages should rank ahead of them.
 
-## Before you publicise it
+## Provenance
 
-The mirror labels itself unofficial on every page and cites the URL and
-timestamp it came from. It is still a republication of Nordic material on a
-personal domain by a Nordic employee, which will read as semi-official
-whatever the footer says. Worth a word with whoever owns brand and legal
-before submitting it to gopher directories — cheap now, awkward to unwind
-after it is indexed.
+Every page cites the URL it was mirrored from and the time it was fetched,
+and `caps.txt` carries an administrator contact. Keep both accurate: the
+mirror is a dated snapshot of someone else's documentation, and the value of
+a copy depends on a reader being able to tell how old it is and where the
+live version is.
+
+Set `ADMIN_CONTACT` in `/etc/nordicgopher/env` before submitting the hole to
+gopher directories — it is what they read to find out who runs it, and it
+defaults to a placeholder that says it is unset.
 
 ## Operating
 

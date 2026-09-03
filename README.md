@@ -5,7 +5,7 @@ served over Gopher (RFC 1436).
 
 A working server, the content pipeline, and three ingesters -- including the
 full nRF Connect SDK documentation, converted from its reStructuredText
-source. It is unofficial and not affiliated with Nordic Semiconductor ASA.
+source.
 
 Deployment is documented separately in [DEPLOY.md](DEPLOY.md).
 
@@ -201,7 +201,7 @@ corrupting it. Everything the ingesters write as text is named `.txt`.
 ## Provenance and attribution
 
 Every generated page states the URL it was mirrored from and the time it was
-fetched, and says it is unofficial. A Gopher mirror of Nordic content reads as
-official whether or not it claims to be, so this is built in from the start
-rather than retrofitted. Before anything goes public-facing, the branding and
-licensing question is worth settling with whoever owns it.
+fetched. That is provenance rather than disclaimer: the mirror is a dated
+snapshot, so a reader needs to know how old a page is and where the live
+version lives. It is built in from the start because retrofitting it once
+pages are indexed is awkward.

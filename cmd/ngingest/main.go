@@ -176,7 +176,7 @@ func run(log *slog.Logger, opt options) error {
 	root.Add(gopher.Blank())
 	root.Add(gopher.Info(text.Rule("-", text.Width)))
 	root.Add(gopher.Info("Generated " + now.UTC().Format("2006-01-02 15:04 MST") +
-		" - unofficial mirror, not affiliated with Nordic Semiconductor ASA"))
+		" - a plain-text mirror; canonical sources are authoritative"))
 
 	if err := t.WriteMenu("/", root); err != nil {
 		return err
@@ -218,13 +218,10 @@ func about(now time.Time) string {
 	body := `WHAT THIS IS
 ============
 
-An unofficial, plain-text mirror of publicly available Nordic
-Semiconductor material, served over Gopher. Every page carries the URL it
-was mirrored from and the time it was fetched; the canonical source is
-always authoritative.
-
-This mirror is not affiliated with, endorsed by, or operated by Nordic
-Semiconductor ASA.
+A plain-text mirror of publicly available Nordic Semiconductor material,
+served over Gopher. Every page carries the URL it was mirrored from and the
+time it was fetched, because the mirror is a dated snapshot: the canonical
+source is always authoritative, and a page here may be stale.
 
 WHAT IS INCLUDED
 ================
@@ -313,7 +310,7 @@ func caps(opt options, now time.Time) string {
 		"ServerSoftware=nordicgopher",
 		"ServerSoftwareVersion=0.2",
 		"ServerArchitecture=" + runtime.GOOS + "-" + runtime.GOARCH,
-		"ServerDescription=Unofficial plain-text mirror of public Nordic Semiconductor resources",
+		"ServerDescription=Plain-text mirror of public Nordic Semiconductor resources",
 		"ServerAdmin=" + admin,
 		"",
 		"## Selectors are slash-separated paths. Menus end in a slash;",
@@ -336,7 +333,7 @@ func caps(opt options, now time.Time) string {
 // to be discoverable.
 func robots() string {
 	return strings.Join([]string{
-		"# nordicgopher - unofficial plain-text mirror",
+		"# nordicgopher - a plain-text mirror",
 		"#",
 		"# This hole republishes public Nordic Semiconductor material. The",
 		"# canonical sources are authoritative and should rank ahead of these",

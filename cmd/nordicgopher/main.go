@@ -79,7 +79,7 @@ func main() {
 			Allow:         map[string]string{"/dl/": artifactory.Base},
 			MaxBytes:      *maxDL,
 			MaxConcurrent: *proxyConc,
-			UserAgent:     "nordicgopher/0.2 (+unofficial gopher mirror)",
+			UserAgent:     "nordicgopher/0.2 (gopher mirror)",
 			HTTP:          &http.Client{Timeout: 30 * time.Minute},
 			Log:           log,
 		}

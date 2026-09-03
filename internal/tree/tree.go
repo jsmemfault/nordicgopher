@@ -81,17 +81,18 @@ func (t *Tree) Swap(dst string) error {
 
 // Attribution is the provenance block appended to every mirrored page.
 //
-// A Gopher mirror of Nordic content reads as official whether or not it says
-// so, so each page states where the content came from and when it was
-// fetched. Retrofitting this later is awkward; it costs nothing now.
+// Each page says where its content came from and when it was fetched. That
+// is not a disclaimer but a useful fact: the mirror is a dated snapshot, so
+// a reader needs to know how old the copy is and where the live version
+// lives. Retrofitting this later is awkward; it costs nothing now.
 func Attribution(canonical string, retrieved time.Time) []string {
 	return []string{
 		"",
 		text.Rule("-", text.Width),
 		"Mirrored from: " + canonical,
 		"Retrieved:     " + retrieved.UTC().Format("2006-01-02 15:04 MST"),
-		"This is an unofficial plain-text mirror. The canonical source above",
-		"is authoritative; content here may be stale or incompletely rendered.",
+		"The canonical source above is authoritative; this copy may be stale",
+		"or incompletely rendered.",
 	}
 }
 
@@ -132,7 +133,7 @@ func Footer(retrieved time.Time) gopher.Menu {
 	var m gopher.Menu
 	m.Add(gopher.Blank())
 	m.Add(gopher.Info(text.Rule("-", text.Width)))
-	m.Add(gopher.Info(fmt.Sprintf("Generated %s by nordicgopher (unofficial mirror)",
+	m.Add(gopher.Info(fmt.Sprintf("Generated %s by nordicgopher",
 		retrieved.UTC().Format("2006-01-02 15:04 MST"))))
 	m.Add(gopher.Link(gopher.TypeMenu, "Back to top", "/"))
 	return m

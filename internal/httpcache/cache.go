@@ -62,7 +62,7 @@ const noRetry = -1 * time.Nanosecond
 func New(dir string) *Client {
 	return &Client{
 		Dir:       dir,
-		UserAgent: "nordicgopher/0.2 (+unofficial gopher mirror; contact repo owner)",
+		UserAgent: "nordicgopher/0.2 (gopher mirror; contact the repository owner)",
 		MinGap:    150 * time.Millisecond,
 		HTTP:      &http.Client{Timeout: 60 * time.Second},
 		Retries:   DefaultRetries,
