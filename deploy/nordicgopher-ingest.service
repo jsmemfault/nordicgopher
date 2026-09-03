@@ -1,0 +1,50 @@
+# Rebuilds the content tree. Run by nordicgopher-ingest.timer.
+#
+# ngingest generates into a staging directory and renames it into place, so
+# the serving process is never shown a partial tree and needs no restart --
+# it picks up the new content on the next request, and reloads its search
+# corpus when the root menu's timestamp changes.
+
+[Unit]
+Description=Rebuild the nordicgopher content tree
+Documentation=https://github.com/jrsharp/nordicgopher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nordicgopher
+Group=nordicgopher
+EnvironmentFile=/etc/nordicgopher/env
+WorkingDirectory=/var/lib/nordicgopher
+
+ExecStart=/usr/local/bin/ngingest \
+    -out /var/lib/nordicgopher/content \
+    -cache /var/lib/nordicgopher/cache \
+    -catalog /var/lib/nordicgopher/artifacts.json \
+    -host ${PUBLIC_HOST} \
+    -admin ${ADMIN_CONTACT} \
+    -max-repos 0 \
+    -max-releases 8
+
+# An ingest that cannot finish should not sit on the lock forever.
+TimeoutStartSec=30min
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/nordicgopher
+
+MemoryMax=1G

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,12 +23,29 @@ type Handler func(w io.Writer, selector, query string) error
 // Server serves a content tree over Gopher, with optional dynamic handlers
 // mounted at selector prefixes.
 type Server struct {
-	Root     string // directory holding the generated content tree
-	Host     string // hostname to advertise in menu lines
-	Port     int    // port to advertise in menu lines
-	Log      *slog.Logger
+	Root string // directory holding the generated content tree
+	Host string // hostname to advertise in menu lines
+	Port int    // port to advertise in menu lines
+	Log  *slog.Logger
+
+	// MaxConns bounds connections served at once. Gopher has no keep-alive,
+	// so this is a cap on concurrent work rather than on visitors: it stops
+	// a flood of search queries, each of which scans the whole corpus, from
+	// exhausting a small host. Zero means DefaultMaxConns.
+	MaxConns int
+
+	// LogClients records the client address on each request. A public
+	// server's request log is a record of who read what, so this is worth
+	// being able to turn off.
+	LogClients bool
+
 	handlers []mount
+	sem      chan struct{}
+	once     sync.Once
 }
+
+// DefaultMaxConns is the connection limit when none is configured.
+const DefaultMaxConns = 64
 
 type mount struct {
 	prefix string
@@ -55,7 +73,11 @@ func (s *Server) ListenAndServe(addr string) error {
 	if err != nil {
 		return err
 	}
-	s.logger().Info("listening", "addr", addr, "root", s.Root, "advertise", fmt.Sprintf("%s:%d", s.Host, s.Port))
+	s.init()
+	s.logger().Info("listening",
+		"addr", addr, "root", s.Root,
+		"advertise", fmt.Sprintf("%s:%d", s.Host, s.Port),
+		"max_conns", cap(s.sem))
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -65,13 +87,37 @@ func (s *Server) ListenAndServe(addr string) error {
 	}
 }
 
+func (s *Server) init() {
+	s.once.Do(func() {
+		n := s.MaxConns
+		if n <= 0 {
+			n = DefaultMaxConns
+		}
+		s.sem = make(chan struct{}, n)
+	})
+}
+
 // requestLimit caps the selector line. Gopher has no length field, so an
 // unbounded read is a trivial memory-exhaustion vector.
 const requestLimit = 4096
 
 func (s *Server) serve(conn net.Conn) {
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(60 * time.Second))
+	s.init()
+
+	// Shed load rather than queue it: a client that waits behind a full
+	// backlog will time out anyway, and telling it so costs one line.
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	default:
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		WriteError(conn, "server busy, please try again")
+		s.logger().Warn("connection refused: at capacity", "max_conns", cap(s.sem))
+		return
+	}
+
+	conn.SetDeadline(time.Now().Add(10 * time.Minute))
 
 	line, err := bufio.NewReaderSize(conn, requestLimit).ReadString('\n')
 	if err != nil && line == "" {
@@ -89,11 +135,16 @@ func (s *Server) serve(conn net.Conn) {
 
 	start := time.Now()
 	err = s.route(conn, selector, query)
-	s.logger().Info("request",
+
+	attrs := []any{
 		"selector", selector, "query", query,
-		"remote", conn.RemoteAddr().String(),
 		"dur", time.Since(start).Round(time.Millisecond),
-		"err", err)
+		"err", err,
+	}
+	if s.LogClients {
+		attrs = append(attrs, "remote", conn.RemoteAddr().String())
+	}
+	s.logger().Info("request", attrs...)
 }
 
 func (s *Server) route(w io.Writer, selector, query string) error {
@@ -188,9 +239,16 @@ func (s *Server) serveFile(w io.Writer, full string) error {
 }
 
 // TypeForFile guesses an item type from a filename extension.
+//
+// An unrecognised or absent extension is treated as binary, which is the
+// conservative direction: a text file served as binary merely arrives without
+// dot-termination and still displays, whereas a binary served as text is
+// corrupted by the line-ending rewrite and the dot-stuffing. It also matters
+// concretely here, because mirrored Unix executables have no extension at
+// all. Everything the ingesters generate as text is named ".txt".
 func TypeForFile(name string) Type {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".txt", ".md", ".rst", ".c", ".h", ".py", ".conf", ".cfg", ".json", ".yml", ".yaml", ".dts", ".overlay", "":
+	case ".txt", ".md", ".rst", ".c", ".h", ".py", ".conf", ".cfg", ".json", ".yml", ".yaml", ".dts", ".overlay":
 		return TypeText
 	case ".gif":
 		return TypeGIF

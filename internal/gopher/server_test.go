@@ -49,6 +49,22 @@ func TestServeMenuFromGophermap(t *testing.T) {
 	}
 }
 
+func TestTypeForFileDefaultsToBinary(t *testing.T) {
+	// A mirrored Unix executable has no extension. Guessing text would
+	// corrupt it, so an unknown extension must fall to binary.
+	for name, want := range map[string]Type{
+		"index.txt":   TypeText,
+		"nrfutil":     TypeBinary,
+		"tool.exe":    TypeBinary,
+		"sdk.zip":     TypeArchive,
+		"diagram.png": TypeImage,
+	} {
+		if got := TypeForFile(name); got != want {
+			t.Errorf("TypeForFile(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestServeSynthesisedListing(t *testing.T) {
 	// /docs has no gophermap, so the server generates one; a partially built
 	// tree must still be navigable.

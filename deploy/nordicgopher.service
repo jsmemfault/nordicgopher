@@ -1,0 +1,62 @@
+# nordicgopher - Gopher mirror of public Nordic Semiconductor resources
+#
+# Install to /etc/systemd/system/nordicgopher.service
+#
+# Port 7070 is unprivileged, so this needs no capabilities and never runs as
+# root. Motsognir binds port 70 per-IP on this host, so BindAddress below
+# pins this service to the jonsharp.net address rather than listening on
+# every interface -- keeping the same one-service-per-IP shape.
+
+[Unit]
+Description=nordicgopher (Gopher mirror of public Nordic Semiconductor resources)
+Documentation=https://github.com/jrsharp/nordicgopher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=nordicgopher
+Group=nordicgopher
+EnvironmentFile=/etc/nordicgopher/env
+
+ExecStart=/usr/local/bin/nordicgopher \
+    -addr ${BIND_ADDRESS}:${PORT} \
+    -host ${PUBLIC_HOST} \
+    -port ${PORT} \
+    -root /var/lib/nordicgopher/content \
+    -max-conns 64 \
+    -proxy-concurrency 2
+
+Restart=always
+RestartSec=5s
+
+# The content tree is the only thing this service needs, and it only reads
+# it. Everything else is closed off.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+ReadOnlyPaths=/var/lib/nordicgopher
+
+# The server holds the text corpus in memory to answer searches; 12 MB of
+# content sits comfortably inside this.
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

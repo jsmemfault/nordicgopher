@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -34,6 +35,10 @@ func main() {
 	docsRef := flag.String("docs-ref", "main", "sdk-nrf branch or tag to read documentation from")
 	maxDocs := flag.Int("max-docs", 0, "documentation pages to mirror (0 = all reachable)")
 	workers := flag.Int("workers", 8, "concurrent source fetches for documentation")
+	mirrorMax := flag.Int64("mirror-max-bytes", 64<<20,
+		"largest artifact copied into the tree; larger ones stay proxied (0 = never copy)")
+	admin := flag.String("admin", "", "administrator contact published in caps.txt")
+	host := flag.String("host", "", "public hostname, published in caps.txt")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
 
@@ -47,6 +52,7 @@ func main() {
 		out: *out, cache: *cache, catalog: *catalog, orgs: *orgs, only: *only,
 		maxRepos: *maxRepos, maxReleases: *maxReleases,
 		docsRef: *docsRef, maxDocs: *maxDocs, workers: *workers,
+		mirrorMax: *mirrorMax, admin: *admin, host: *host,
 	}
 	if err := run(log, cfg); err != nil {
 		log.Error("ingest failed", "err", err)
@@ -61,6 +67,8 @@ type options struct {
 	maxRepos, maxReleases           int
 	docsRef                         string
 	maxDocs, workers                int
+	mirrorMax                       int64
+	admin, host                     string
 }
 
 func run(log *slog.Logger, opt options) error {
@@ -137,7 +145,11 @@ func run(log *slog.Logger, opt options) error {
 		ing := &artifactory.Ingester{
 			HTTP: hc,
 			Log:  log,
-			Cfg:  artifactory.Config{CatalogPath: opt.catalog, Verify: true},
+			Cfg: artifactory.Config{
+				CatalogPath:    opt.catalog,
+				Verify:         true,
+				MirrorMaxBytes: opt.mirrorMax,
+			},
 		}
 		frag, err := ing.Run(t, now)
 		if err != nil {
@@ -158,6 +170,12 @@ func run(log *slog.Logger, opt options) error {
 		return err
 	}
 	if err := t.WriteFile("/about.txt", about(now)); err != nil {
+		return err
+	}
+	if err := t.WriteFile("/caps.txt", caps(opt, now)); err != nil {
+		return err
+	}
+	if err := t.WriteFile("/robots.txt", robots()); err != nil {
 		return err
 	}
 
@@ -250,6 +268,78 @@ func cleanStaging(log *slog.Logger, parent string) {
 			os.RemoveAll(p)
 		}
 	}
+}
+
+// caps returns the server capabilities file. Gopher directories and
+// aggregators fetch /caps.txt to learn who runs a hole and how its selectors
+// are shaped; publishing it is how a new hole becomes findable and how a
+// reader knows who to contact.
+func caps(opt options, now time.Time) string {
+	host := opt.host
+	if host == "" {
+		host = "localhost"
+	}
+	admin := opt.admin
+	if admin == "" {
+		admin = "unset - pass -admin to ngingest"
+	}
+	return strings.Join([]string{
+		"CAPS",
+		"",
+		"##",
+		"## This is a gopher server capabilities file, as fetched by gopher",
+		"## directories and aggregators.",
+		"##",
+		"",
+		"caps.serial=" + now.UTC().Format("20060102150405"),
+		"caps.vendor=nordicgopher",
+		"caps.version=1",
+		"",
+		"expire.capabilities=86400",
+		"expire.software=604800",
+		"",
+		"ServerSoftware=nordicgopher",
+		"ServerSoftwareVersion=0.2",
+		"ServerArchitecture=" + runtime.GOOS + "-" + runtime.GOARCH,
+		"ServerDescription=Unofficial plain-text mirror of public Nordic Semiconductor resources",
+		"ServerAdmin=" + admin,
+		"",
+		"## Selectors are slash-separated paths. Menus end in a slash;",
+		"## documents end in .txt.",
+		"PathDelimeter=/",
+		"PathIdentity=.",
+		"PathParent=..",
+		"PathParentDouble=FALSE",
+		"PathKeepPreDelimeter=FALSE",
+		"ServerDefaultEncoding=utf-8",
+		"",
+	}, "\n")
+}
+
+// robots returns a robots.txt for gopher crawlers, which do fetch it.
+//
+// The mirror is someone else's content republished, so the canonical pages
+// should win a search rather than these copies. Crawling the documentation
+// tree is 733 pages of duplicate text; the entry points are enough for a hole
+// to be discoverable.
+func robots() string {
+	return strings.Join([]string{
+		"# nordicgopher - unofficial plain-text mirror",
+		"#",
+		"# This hole republishes public Nordic Semiconductor material. The",
+		"# canonical sources are authoritative and should rank ahead of these",
+		"# copies, so indexing is limited to the entry points.",
+		"",
+		"User-agent: *",
+		"Crawl-delay: 30",
+		"Disallow: /ncs/",
+		"Disallow: /github/",
+		"Disallow: /files/artifacts/",
+		"Disallow: /dl/",
+		"Disallow: /search",
+		"Allow: /",
+		"",
+	}, "\n")
 }
 
 func splitList(s string) []string {

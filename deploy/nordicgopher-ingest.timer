@@ -1,0 +1,17 @@
+# Nightly rebuild.
+#
+# Most upstream content is unchanged between runs, and the fetch cache
+# revalidates with ETags, so a typical night is a few hundred 304s. GitHub
+# does not count those against the API rate limit.
+
+[Unit]
+Description=Nightly rebuild of the nordicgopher content tree
+
+[Timer]
+OnCalendar=daily
+# Spread the load off the hour, and do not stampede if the box was asleep.
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

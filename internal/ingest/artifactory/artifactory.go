@@ -14,6 +14,7 @@ package artifactory
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -35,6 +36,16 @@ const Base = "https://files.nordicsemi.com/artifactory/"
 type Config struct {
 	CatalogPath string // path to artifacts.json; empty disables the download menu
 	Verify      bool   // HEAD each catalogue entry before listing it
+
+	// MirrorMaxBytes is the largest artifact copied into the content tree at
+	// ingest time. Anything larger is left as a live proxy selector.
+	//
+	// Copying is strongly preferred for a public server: a proxy selector
+	// turns every visitor into an outbound fetch from files.nordicsemi.com,
+	// so an artifact that stays proxied is an egress amplifier pointed at
+	// Nordic's own file server. A copied artifact is an ordinary static file
+	// served from disk, costing nothing upstream and nothing per request.
+	MirrorMaxBytes int64
 }
 
 // Ingester writes the /files subtree.
@@ -151,11 +162,11 @@ func (in *Ingester) writeDownloads(t *tree.Tree, now time.Time) (int, error) {
 	}
 
 	m := tree.Header("Downloads",
-		"Artifacts are streamed from files.nordicsemi.com through this server "+
-			"as Gopher binary items, since Gopher clients cannot follow an "+
-			"https link. Sizes are as reported upstream at generation time.")
+		"Gopher clients cannot follow an https link, so these artifacts are "+
+			"copied from files.nordicsemi.com at generation time and served "+
+			"from this server as binary items.")
 
-	count := 0
+	count, mirrored := 0, 0
 	for _, g := range cat.Groups {
 		m.Add(gopher.Info(g.Title))
 		m.Add(gopher.Info(text.Rule("-", min(len(g.Title), text.Width))))
@@ -167,24 +178,39 @@ func (in *Ingester) writeDownloads(t *tree.Tree, now time.Time) (int, error) {
 		m.Add(gopher.Blank())
 
 		for _, it := range g.Items {
-			path := strings.TrimPrefix(it.Path, "/")
-			size := ""
+			p := strings.TrimPrefix(it.Path, "/")
+			var reported int64
 			if in.Cfg.Verify {
-				n, err := in.head(Base + path)
+				n, err := in.head(Base + p)
 				if err != nil {
 					in.log().Warn("catalogue entry unavailable, omitting",
-						"name", it.Name, "path", path, "err", err)
+						"name", it.Name, "path", p, "err", err)
 					continue
 				}
-				if n > 0 {
-					size = humanBytes(n)
+				reported = n
+			}
+
+			selector := "/dl/" + p
+			size := reported
+			if in.Cfg.MirrorMaxBytes > 0 && reported <= in.Cfg.MirrorMaxBytes {
+				sel, n, err := in.mirror(t, p)
+				if err != nil {
+					in.log().Warn("could not copy artifact, leaving it proxied",
+						"name", it.Name, "path", p, "err", err)
+				} else {
+					selector, size = sel, n
+					mirrored++
 				}
+			} else if reported > 0 {
+				in.log().Info("artifact too large to copy, serving it proxied",
+					"name", it.Name, "bytes", reported, "limit", in.Cfg.MirrorMaxBytes)
 			}
+
 			label := it.Name
-			if size != "" {
-				label = fmt.Sprintf("%-44s %10s", text.Truncate(it.Name, 44), size)
+			if size > 0 {
+				label = fmt.Sprintf("%-44s %10s", text.Truncate(it.Name, 44), humanBytes(size))
 			}
-			m.Add(gopher.Link(gopher.TypeBinary, label, "/dl/"+path))
+			m.Add(gopher.Link(gopher.TypeBinary, label, selector))
 			count++
 		}
 		m.Add(gopher.Blank())
@@ -192,7 +218,46 @@ func (in *Ingester) writeDownloads(t *tree.Tree, now time.Time) (int, error) {
 
 	m.Add(gopher.Link(gopher.TypeMenu, "Back to files", "/files/"))
 	m.Add(tree.Footer(now)...)
+	in.log().Info("download catalogue written", "artifacts", count, "copied", mirrored)
 	return count, t.WriteMenu("/files/downloads", m)
+}
+
+// mirror copies an artifact into the content tree and returns its selector
+// and size. The upstream path is preserved under /files/artifacts/ so a
+// selector stays stable across runs and collisions are impossible.
+func (in *Ingester) mirror(t *tree.Tree, upstream string) (string, int64, error) {
+	selector := "/files/artifacts/" + upstream
+
+	req, err := http.NewRequest("GET", Base+upstream, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("User-Agent", in.HTTP.UserAgent)
+	resp, err := in.HTTP.HTTP.Do(req)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("GET %s: %s", upstream, resp.Status)
+	}
+
+	f, err := t.Create(selector)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+
+	// Bound the copy even though the HEAD said it would fit: the size the
+	// HEAD reported is a promise, not a guarantee.
+	n, err := io.Copy(f, io.LimitReader(resp.Body, in.Cfg.MirrorMaxBytes+1))
+	if err != nil {
+		return "", 0, err
+	}
+	if n > in.Cfg.MirrorMaxBytes {
+		return "", 0, fmt.Errorf("artifact exceeded %d bytes while copying", in.Cfg.MirrorMaxBytes)
+	}
+	return selector, n, nil
 }
 
 // head checks that a catalogue path still resolves and returns its size when

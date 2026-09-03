@@ -56,6 +56,16 @@ func (t *Tree) WriteFile(selector, content string) error {
 	return os.WriteFile(p, []byte(content), 0o644)
 }
 
+// Create opens a leaf file for writing, creating parent directories. The
+// caller closes it. Used for content too large to hold in memory.
+func (t *Tree) Create(selector string) (*os.File, error) {
+	p := t.path(selector)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return nil, err
+	}
+	return os.Create(p)
+}
+
 // Swap atomically replaces dst with the tree, keeping the previous copy as
 // dst+".prev" so a bad ingest run can be rolled back by hand.
 func (t *Tree) Swap(dst string) error {

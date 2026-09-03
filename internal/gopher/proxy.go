@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,10 +26,22 @@ type Proxy struct {
 	// MaxBytes caps a single transfer; zero means unlimited.
 	MaxBytes int64
 
+	// MaxConcurrent bounds transfers in flight. On a public server every
+	// proxied selector is an outbound fetch a stranger can trigger, so this
+	// is what keeps the host from being used to hammer the upstream. Zero
+	// means DefaultMaxConcurrent.
+	MaxConcurrent int
+
 	HTTP      *http.Client
 	UserAgent string
 	Log       *slog.Logger
+
+	sem  chan struct{}
+	once sync.Once
 }
+
+// DefaultMaxConcurrent is the in-flight transfer limit when none is set.
+const DefaultMaxConcurrent = 2
 
 func (p *Proxy) logger() *slog.Logger {
 	if p.Log != nil {
@@ -51,6 +64,23 @@ func (p *Proxy) Handle(w io.Writer, selector, _ string) error {
 	if err != nil {
 		WriteError(w, err.Error())
 		return err
+	}
+
+	p.once.Do(func() {
+		n := p.MaxConcurrent
+		if n <= 0 {
+			n = DefaultMaxConcurrent
+		}
+		p.sem = make(chan struct{}, n)
+	})
+	select {
+	case p.sem <- struct{}{}:
+		defer func() { <-p.sem }()
+	default:
+		WriteError(w, "too many downloads in progress, please try again")
+		p.logger().Warn("proxied download refused: at capacity",
+			"selector", selector, "max_concurrent", cap(p.sem))
+		return nil
 	}
 
 	req, err := http.NewRequest("GET", target, nil)

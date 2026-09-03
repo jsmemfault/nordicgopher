@@ -7,6 +7,8 @@ A working server, the content pipeline, and three ingesters -- including the
 full nRF Connect SDK documentation, converted from its reStructuredText
 source. It is unofficial and not affiliated with Nordic Semiconductor ASA.
 
+Deployment is documented separately in [DEPLOY.md](DEPLOY.md).
+
 ## Quick start
 
 ```sh
@@ -130,11 +132,23 @@ of the document, and relative targets are resolved against the document's
 upstream URL first — otherwise `see MIGRATION.md` points nowhere.
 
 **Downloads.** A Gopher client cannot follow an `https` link, so a menu of
-downloads is decoration unless the server fetches the bytes. `/dl/` does that,
-restricted by an allowlist keyed on the full upstream URL prefix — not on
-hostname — because without it the handler is an open proxy. Traversal,
-percent-encoded traversal, and scheme-relative escapes are all rejected;
-`internal/gopher/gopher_test.go` covers each.
+downloads is decoration unless the server supplies the bytes itself.
+Artifacts are therefore copied into the content tree at ingest time and
+served as ordinary static files.
+
+Copying rather than proxying is the important part on a public server: a
+proxied selector turns every visitor into an outbound fetch from
+`files.nordicsemi.com`, making the host an egress amplifier aimed at Nordic's
+own file server. Anything above `-mirror-max-bytes` (64 MiB) stays proxied,
+and the proxy that remains is restricted by an allowlist keyed on the full
+upstream URL prefix — not on hostname — and capped at two transfers in
+flight. Traversal, percent-encoded traversal, and scheme-relative escapes are
+all rejected; `internal/gopher/gopher_test.go` covers each.
+
+One consequence worth noting: a mirrored Unix executable has no filename
+extension, so item-type inference defaults to binary rather than text.
+Guessing text would dot-terminate the file and rewrite its line endings,
+corrupting it. Everything the ingesters write as text is named `.txt`.
 
 ## Tools
 
@@ -163,6 +177,9 @@ percent-encoded traversal, and scheme-relative escapes are all rejected;
 - The RST converter handles the constructs Nordic and Zephyr docs use and
   drops the rest. It is not docutils.
 - Nothing behind authentication is mirrored, by design.
+- Serving on a non-default port means every published link must carry it
+  (`gopher://host:7070/`); clients that assume port 70 fail on a bare
+  hostname.
 
 ## Next
 
