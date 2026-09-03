@@ -52,14 +52,23 @@ vet:
 fmt:
 	$(GO) fmt ./...
 
-# Build the content tree. Set GITHUB_TOKEN to raise the API rate limit from
-# 60 to 5000 requests/hour, which is what a full run needs.
-ingest:
+# Build the content tree, for local development.
+#
+# ON THE DEPLOYMENT HOST, USE THE UNIT INSTEAD:
+#   sudo systemctl start nordicgopher-ingest.service
+# These targets write to ./$(CONTENT) in the working copy, not to
+# /var/lib/nordicgopher/content, so running them on the server produces a
+# tree that nothing serves.
+#
+# Set GITHUB_TOKEN to raise the API budget from 60 to 5000 requests/hour.
+# Without it, ngingest reads the remaining budget and mirrors as many
+# repositories as it can afford rather than overspending and failing.
+ingest: check-go
 	$(GO) run ./cmd/ngingest -out $(CONTENT)
 
-# The documentation ingest alone. Needs no token: one API request for the git
-# tree, then the source files come from the CDN.
-ingest-docs:
+# The documentation ingest alone: one API request for the git tree, then the
+# source files come from the CDN. This part needs no token.
+ingest-docs: check-go
 	$(GO) run ./cmd/ngingest -only ncsdocs -out $(CONTENT)
 
 serve:

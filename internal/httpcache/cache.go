@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +32,13 @@ type Client struct {
 	HTTP      *http.Client
 	Log       *slog.Logger
 
+	// Retries is the number of times a throttled or failed request is
+	// retried with backoff. A cold cache on a datacenter address gets
+	// throttled where a warm cache on a home connection never does, so
+	// giving up on the first 429 makes the first run the one most likely to
+	// fail. Zero means DefaultRetries.
+	Retries int
+
 	mu   sync.Mutex
 	last time.Time
 
@@ -45,12 +53,19 @@ type meta struct {
 	Status       int       `json:"status"`
 }
 
+// DefaultRetries is the retry count when none is configured.
+const DefaultRetries = 4
+
+// noRetry marks a failure that retrying cannot fix.
+const noRetry = -1 * time.Nanosecond
+
 func New(dir string) *Client {
 	return &Client{
 		Dir:       dir,
-		UserAgent: "nordicgopher/0.1 (+unofficial gopher mirror; contact repo owner)",
+		UserAgent: "nordicgopher/0.2 (+unofficial gopher mirror; contact repo owner)",
 		MinGap:    150 * time.Millisecond,
 		HTTP:      &http.Client{Timeout: 60 * time.Second},
+		Retries:   DefaultRetries,
 	}
 }
 
@@ -79,10 +94,45 @@ func (c *Client) throttle() {
 }
 
 // Get returns the body for url, using a conditional request when a cached
-// copy exists. Extra headers are applied to the request.
+// copy exists, retrying with backoff if the request is throttled.
 func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
+	tries := c.Retries
+	if tries <= 0 {
+		tries = DefaultRetries
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < tries; attempt++ {
+		body, retryAfter, err := c.get(url, hdr)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if retryAfter < 0 {
+			// Not a throttle or a transient fault; retrying will not help.
+			return nil, err
+		}
+		if attempt == tries-1 {
+			break
+		}
+		// Exponential backoff, unless the server said how long to wait.
+		wait := time.Duration(1<<attempt) * time.Second
+		if retryAfter > 0 {
+			wait = retryAfter
+		}
+		c.logger().Warn("request throttled, backing off",
+			"url", url, "attempt", attempt+1, "of", tries, "wait", wait, "err", err)
+		time.Sleep(wait)
+	}
+	return nil, lastErr
+}
+
+// get performs one attempt. The returned duration is the delay the server
+// asked for, zero to back off on our own schedule, or negative when the
+// failure is not worth retrying.
+func (c *Client) get(url string, hdr http.Header) ([]byte, time.Duration, error) {
 	if err := os.MkdirAll(c.Dir, 0o755); err != nil {
-		return nil, err
+		return nil, noRetry, err
 	}
 	base := c.key(url)
 
@@ -96,7 +146,7 @@ func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, noRetry, err
 	}
 	for k, vs := range hdr {
 		for _, v := range vs {
@@ -121,20 +171,21 @@ func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
 			if b, rerr := os.ReadFile(base + ".body"); rerr == nil {
 				c.logger().Warn("upstream unreachable, serving cached copy", "url", url, "err", err)
 				c.hits.Add(1)
-				return b, nil
+				return b, 0, nil
 			}
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified && cached {
 		c.revalidated.Add(1)
-		return os.ReadFile(base + ".body")
+		b, err := os.ReadFile(base + ".body")
+		return b, noRetry, err
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Rate limiting and upstream faults are transient. A mirror would
@@ -146,10 +197,14 @@ func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
 				c.logger().Warn("upstream returned a transient error, serving cached copy",
 					"url", url, "status", resp.Status)
 				c.hits.Add(1)
-				return b, nil
+				return b, noRetry, nil
 			}
 		}
-		return nil, fmt.Errorf("GET %s: %s: %s", url, resp.Status, snippet(body))
+		err := fmt.Errorf("GET %s: %s: %s", url, resp.Status, snippet(body))
+		if !retryable(resp.StatusCode) {
+			return nil, noRetry, err
+		}
+		return nil, retryDelay(resp), err
 	}
 
 	c.misses.Add(1)
@@ -162,7 +217,23 @@ func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
 		Status:       resp.StatusCode,
 	})
 	os.WriteFile(base+".meta", nm, 0o644)
-	return body, nil
+	return body, noRetry, nil
+}
+
+// retryDelay reads how long the server asked us to wait. GitHub sends
+// Retry-After when it throttles, and x-ratelimit-reset when the hourly
+// budget is spent; the latter can be an hour away, which is longer than an
+// ingest should ever sit waiting, so it is reported as "back off normally"
+// and left to the caller's patience.
+func retryDelay(resp *http.Response) time.Duration {
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			if d := time.Duration(secs) * time.Second; d <= 2*time.Minute {
+				return d
+			}
+		}
+	}
+	return 0
 }
 
 // GetJSON fetches and decodes a JSON document.

@@ -102,11 +102,39 @@ func (in *Ingester) headers() http.Header {
 	return h
 }
 
+// requestsPerRepo is what mirroring one repository costs: its README and its
+// releases.
+const requestsPerRepo = 2
+
+// reservedRequests is held back for the other ingesters -- notably the
+// documentation ingest, which needs exactly one request for the git tree and
+// should not be starved by this one.
+const reservedRequests = 4
+
 // Run writes the subtree and returns a menu fragment for the site root.
 func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
-	if in.Cfg.Token == "" {
-		in.log().Warn("no GitHub token: unauthenticated API is limited to 60 requests/hour",
-			"hint", "set GITHUB_TOKEN to mirror more repositories per run")
+	// Size the run to the budget actually available rather than assuming
+	// one. Unauthenticated GitHub allows 60 requests an hour and each
+	// repository costs two, so the configured default overspends the budget
+	// on a cold cache -- and every failed attempt spends more of it, which
+	// is how a first deployment ends up unable to run even the one-request
+	// documentation ingest. Asking for the remaining budget is free: the
+	// rate_limit endpoint does not count against it.
+	if budget, ok := in.budget(); ok {
+		affordable := affordableRepos(budget, len(in.Cfg.Orgs))
+		switch {
+		case affordable <= 0:
+			return nil, fmt.Errorf(
+				"GitHub API budget exhausted (%d requests left this hour); "+
+					"set GITHUB_TOKEN to raise the limit from 60 to 5000/hour, "+
+					"or wait for the window to reset", budget)
+		case in.Cfg.MaxRepos == 0 || in.Cfg.MaxRepos > affordable:
+			in.log().Warn("limiting repositories to fit the remaining API budget",
+				"requested", repoLimitLabel(in.Cfg.MaxRepos), "using", affordable,
+				"budget", budget,
+				"hint", "set GITHUB_TOKEN to raise the limit from 60 to 5000/hour")
+			in.Cfg.MaxRepos = affordable
+		}
 	}
 
 	orgMenu := tree.Header("Nordic Semiconductor on GitHub",
@@ -140,6 +168,58 @@ func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
 		fmt.Sprintf("GitHub  - %d public repositories, READMEs and release notes", mirrored),
 		"/github/"))
 	return frag, nil
+}
+
+// budget returns the remaining API requests this hour. It reports false when
+// the limit cannot be read, in which case the configured limits are used as
+// given: guessing a budget would be worse than trusting the operator.
+func (in *Ingester) budget() (int, bool) {
+	// A token raises the limit to 5000/hour, which no configuration here can
+	// exhaust, so there is nothing to size against.
+	if in.Cfg.Token != "" {
+		return 0, false
+	}
+	in.log().Warn("no GitHub token: the unauthenticated API allows 60 requests/hour",
+		"hint", "set GITHUB_TOKEN to mirror every repository in one run")
+
+	var rl struct {
+		Resources struct {
+			Core struct {
+				Remaining int   `json:"remaining"`
+				Reset     int64 `json:"reset"`
+			} `json:"core"`
+		} `json:"resources"`
+	}
+	if err := in.HTTP.GetJSON(apiBase+"/rate_limit", in.headers(), &rl); err != nil {
+		in.log().Warn("could not read the API rate limit; proceeding with configured limits", "err", err)
+		return 0, false
+	}
+	core := rl.Resources.Core
+	in.log().Info("github API budget",
+		"remaining", core.Remaining,
+		"resets_in", time.Until(time.Unix(core.Reset, 0)).Round(time.Minute))
+	return core.Remaining, true
+}
+
+// affordableRepos is how many repositories per organisation fit in a budget
+// of API requests: one listing page per organisation, two requests per
+// repository, and a reserve left for the other ingesters.
+func affordableRepos(budget, orgs int) int {
+	if orgs < 1 {
+		orgs = 1
+	}
+	spendable := budget - reservedRequests - orgs
+	if spendable < 0 {
+		return 0
+	}
+	return spendable / requestsPerRepo / orgs
+}
+
+func repoLimitLabel(n int) string {
+	if n == 0 {
+		return "all"
+	}
+	return fmt.Sprint(n)
 }
 
 func (in *Ingester) repos(org string) ([]repo, error) {

@@ -35,6 +35,10 @@ func main() {
 	docsRef := flag.String("docs-ref", "main", "sdk-nrf branch or tag to read documentation from")
 	maxDocs := flag.Int("max-docs", 0, "documentation pages to mirror (0 = all reachable)")
 	workers := flag.Int("workers", 8, "concurrent source fetches for documentation")
+	rawGap := flag.Duration("raw-gap", 25*time.Millisecond,
+		"minimum interval between CDN source fetches; raise it if the host gets throttled")
+	retries := flag.Int("retries", httpcache.DefaultRetries,
+		"retries with backoff for a throttled or failed fetch")
 	mirrorMax := flag.Int64("mirror-max-bytes", 64<<20,
 		"largest artifact copied into the tree; larger ones stay proxied (0 = never copy)")
 	admin := flag.String("admin", "", "administrator contact published in caps.txt")
@@ -53,6 +57,7 @@ func main() {
 		maxRepos: *maxRepos, maxReleases: *maxReleases,
 		docsRef: *docsRef, maxDocs: *maxDocs, workers: *workers,
 		mirrorMax: *mirrorMax, admin: *admin, host: *host,
+		rawGap: *rawGap, retries: *retries,
 	}
 	if err := run(log, cfg); err != nil {
 		log.Error("ingest failed", "err", err)
@@ -69,6 +74,8 @@ type options struct {
 	maxDocs, workers                int
 	mirrorMax                       int64
 	admin, host                     string
+	rawGap                          time.Duration
+	retries                         int
 }
 
 func run(log *slog.Logger, opt options) error {
@@ -86,14 +93,19 @@ func run(log *slog.Logger, opt options) error {
 	defer os.RemoveAll(staging)
 
 	t := tree.New(staging)
-	// The GitHub API is throttled; raw.githubusercontent.com is a CDN and is
-	// not, so documentation source is fetched flat out through its own client
-	// over the same cache directory.
+	// Two clients over one cache directory. The API client is throttled
+	// because its budget is counted in requests per hour; the CDN client is
+	// paced only lightly, since its limit is about rate rather than volume.
+	// The CDN gap is not zero on purpose: a datacenter address fetching 889
+	// files as fast as it can is exactly the shape that gets throttled,
+	// where the same run from a home connection never is.
 	hc := httpcache.New(cache)
 	hc.Log = log
+	hc.Retries = opt.retries
 	raw := httpcache.New(cache)
 	raw.Log = log
-	raw.MinGap = 0
+	raw.MinGap = opt.rawGap
+	raw.Retries = opt.retries
 
 	var root gopher.Menu
 	root.Add(banner()...)

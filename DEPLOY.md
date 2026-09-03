@@ -148,20 +148,61 @@ firewall if one is running.
 Most content is unchanged between runs and the fetch cache revalidates with
 ETags, so a typical night is a few hundred 304s.
 
+### Rebuild on the host with the unit, not with make
+
+```sh
+sudo systemctl start nordicgopher-ingest.service
+```
+
+`make ingest` writes to `./content` in a working copy, not to
+`/var/lib/nordicgopher/content`, so running it on the server builds a tree
+that nothing serves. It also needs a Go toolchain the host does not need to
+have.
+
 ### The token, and what it is for
 
-Only the repository ingest needs `GITHUB_TOKEN`. Unauthenticated GitHub
-allows 60 requests per hour and each repository costs two, so the unit is
-configured with `-max-repos 0` (all repositories) on the assumption a token
-is present. Without one, either set a token or lower that number, or the
-repository portion will fail partway with a rate-limit error. The
-documentation ingest is unaffected — it spends exactly one API request on the
-git tree and fetches the 889 source files from `raw.githubusercontent.com`,
-which is a CDN and not rate limited.
+Only the repository ingest needs `GITHUB_TOKEN`. The arithmetic is worth
+knowing, because it decides whether an unauthenticated run can work at all:
 
-If the API does rate limit mid-run, the fetch cache falls back to its stored
-copy rather than failing the rebuild, so a partial run republishes the
-previous content for whatever it could not refresh.
+| | requests |
+| --- | --- |
+| Unauthenticated budget, per hour, per IP | 60 |
+| One organisation listing | 1 |
+| One repository (README + releases) | 2 |
+| The whole documentation ingest | **1** |
+
+So two organisations at 15 repositories each costs 62 requests against a
+budget of 60. `ngingest` now reads the remaining budget first — asking costs
+nothing, as the `rate_limit` endpoint is not itself counted — and mirrors as
+many repositories as it can afford, holding back a small reserve so the
+documentation ingest is never starved of its single request. It says what it
+did:
+
+```
+WARN  no GitHub token: the unauthenticated API allows 60 requests/hour
+INFO  github API budget remaining=58 resets_in=58m0s
+WARN  limiting repositories to fit the remaining API budget requested=15 using=13
+```
+
+If the budget is already spent it stops with what to do about it, rather than
+failing partway through with a 403.
+
+**Set a token.** With one the limit is 5000 requests an hour, `-max-repos 0`
+mirrors all ~120 repositories, and none of the above applies. Put it in
+`/etc/nordicgopher/env`; a fine-grained token with no scopes at all is
+enough, since everything read here is public.
+
+Two things make a first run on a cold cache more fragile than later ones, and
+both are handled: throttled requests are retried with backoff, honouring
+`Retry-After`, and the CDN fetches are paced (`-raw-gap`, 25 ms) because a
+datacenter address pulling 889 files as fast as it can is the shape that gets
+throttled, where the same run from a home connection is not. Raise the gap if
+the host still gets throttled.
+
+If the API throttles mid-run, the fetch cache falls back to its stored copy
+rather than failing the rebuild, so a partial run republishes the previous
+content for whatever it could not refresh. On a cold cache there is nothing
+to fall back to, which is why the first run is the one to watch.
 
 ## Public exposure
 
