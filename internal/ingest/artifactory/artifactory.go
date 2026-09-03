@@ -34,6 +34,9 @@ const Base = "https://files.nordicsemi.com/artifactory/"
 
 // Config selects what to mirror.
 type Config struct {
+	// Root is the selector prefix for this subtree, e.g. "/files". See
+	// github.Config.Root for why it is configurable.
+	Root        string
 	CatalogPath string // path to artifacts.json; empty disables the download menu
 	Verify      bool   // HEAD each catalogue entry before listing it
 
@@ -96,7 +99,7 @@ func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
 		} else {
 			downloads = n
 			m.Add(gopher.Link(gopher.TypeMenu,
-				fmt.Sprintf("Downloads (%d verified artifacts)", n), "/files/downloads/"))
+				fmt.Sprintf("Downloads (%d verified artifacts)", n), in.Cfg.Root+"/downloads/"))
 			m.Add(gopher.Blank())
 		}
 	}
@@ -110,11 +113,11 @@ func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
 		}
 		m.Add(gopher.Link(gopher.TypeMenu,
 			fmt.Sprintf("Repository index (%d public repositories)", len(repos)),
-			"/files/repositories/"))
+			in.Cfg.Root+"/repositories/"))
 	}
 
 	m.Add(tree.Footer(now)...)
-	if err := t.WriteMenu("/files", m); err != nil {
+	if err := t.WriteMenu(in.Cfg.Root, m); err != nil {
 		return nil, err
 	}
 
@@ -122,7 +125,7 @@ func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
 	var frag gopher.Menu
 	frag.Add(gopher.Link(gopher.TypeMenu,
 		fmt.Sprintf("Files   - %d downloadable artifacts, %d repositories", downloads, len(repos)),
-		"/files/"))
+		in.Cfg.Root+"/"))
 	return frag, nil
 }
 
@@ -146,9 +149,9 @@ func (in *Ingester) writeRepositories(t *tree.Tree, repos []repository, now time
 	}
 	m.Add(gopher.Blank())
 	m.Add(gopher.URL("Browse the file server on the web", Base))
-	m.Add(gopher.Link(gopher.TypeMenu, "Back to files", "/files/"))
+	m.Add(gopher.Link(gopher.TypeMenu, "Back to files", in.Cfg.Root+"/"))
 	m.Add(tree.Footer(now)...)
-	return t.WriteMenu("/files/repositories", m)
+	return t.WriteMenu(in.Cfg.Root+"/repositories", m)
 }
 
 func (in *Ingester) writeDownloads(t *tree.Tree, now time.Time) (int, error) {
@@ -216,17 +219,17 @@ func (in *Ingester) writeDownloads(t *tree.Tree, now time.Time) (int, error) {
 		m.Add(gopher.Blank())
 	}
 
-	m.Add(gopher.Link(gopher.TypeMenu, "Back to files", "/files/"))
+	m.Add(gopher.Link(gopher.TypeMenu, "Back to files", in.Cfg.Root+"/"))
 	m.Add(tree.Footer(now)...)
 	in.log().Info("download catalogue written", "artifacts", count, "copied", mirrored)
-	return count, t.WriteMenu("/files/downloads", m)
+	return count, t.WriteMenu(in.Cfg.Root+"/downloads", m)
 }
 
 // mirror copies an artifact into the content tree and returns its selector
 // and size. The upstream path is preserved under /files/artifacts/ so a
 // selector stays stable across runs and collisions are impossible.
 func (in *Ingester) mirror(t *tree.Tree, upstream string) (string, int64, error) {
-	selector := "/files/artifacts/" + upstream
+	selector := in.Cfg.Root + "/artifacts/" + upstream
 
 	req, err := http.NewRequest("GET", Base+upstream, nil)
 	if err != nil {

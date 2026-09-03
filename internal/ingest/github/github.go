@@ -26,6 +26,10 @@ import (
 
 // Config selects what to mirror.
 type Config struct {
+	// Root is the selector prefix for this subtree, e.g. "/github". It is
+	// not always "/github": when the tree is served as a subdirectory of an
+	// existing gopherhole, every selector has to carry that prefix.
+	Root        string
 	Orgs        []string
 	MaxRepos    int    // per organisation, most recently pushed first
 	MaxReleases int    // release notes per repository
@@ -137,6 +141,7 @@ func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
 		}
 	}
 
+	root := in.Cfg.Root
 	orgMenu := tree.Header("Nordic Semiconductor on GitHub",
 		"Public repositories, README files and release notes, converted to plain text.")
 
@@ -155,10 +160,10 @@ func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
 		mirrored += n
 		orgMenu.Add(gopher.Link(gopher.TypeMenu,
 			fmt.Sprintf("%-24s %3d repositories", org, n),
-			"/github/"+strings.ToLower(org)+"/"))
+			root+"/"+strings.ToLower(org)+"/"))
 	}
 	orgMenu.Add(tree.Footer(now)...)
-	if err := t.WriteMenu("/github", orgMenu); err != nil {
+	if err := t.WriteMenu(root, orgMenu); err != nil {
 		return nil, err
 	}
 
@@ -166,7 +171,7 @@ func (in *Ingester) Run(t *tree.Tree, now time.Time) (gopher.Menu, error) {
 	var frag gopher.Menu
 	frag.Add(gopher.Link(gopher.TypeMenu,
 		fmt.Sprintf("GitHub  - %d public repositories, READMEs and release notes", mirrored),
-		"/github/"))
+		root+"/"))
 	return frag, nil
 }
 
@@ -248,7 +253,7 @@ func (in *Ingester) repos(org string) ([]repo, error) {
 }
 
 func (in *Ingester) writeOrg(t *tree.Tree, org string, repos []repo, now time.Time) (int, error) {
-	orgSel := "/github/" + strings.ToLower(org)
+	orgSel := in.Cfg.Root + "/" + strings.ToLower(org)
 	m := tree.Header(org+" repositories",
 		fmt.Sprintf("%d repositories, most recently updated first.", len(repos)))
 

@@ -18,14 +18,18 @@ Group=nordicgopher
 EnvironmentFile=/etc/nordicgopher/env
 WorkingDirectory=/var/lib/nordicgopher
 
+# $INGEST_EXTRA_ARGS is word-split by systemd (single $, not ${}), so the
+# Motsognir target adds its flags there rather than needing a second unit:
+#   INGEST_EXTRA_ARGS=-selector-prefix /nrf -search-cgi search.cgi
 ExecStart=/usr/local/bin/ngingest \
-    -out /var/lib/nordicgopher/content \
+    -out ${CONTENT_DIR} \
     -cache /var/lib/nordicgopher/cache \
     -catalog /var/lib/nordicgopher/artifacts.json \
     -host ${PUBLIC_HOST} \
     -admin ${ADMIN_CONTACT} \
     -max-repos 0 \
-    -max-releases 8
+    -max-releases 8 \
+    $INGEST_EXTRA_ARGS
 
 # An ingest that cannot finish should not sit on the lock forever.
 TimeoutStartSec=30min
@@ -46,5 +50,8 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 CapabilityBoundingSet=
 ReadWritePaths=/var/lib/nordicgopher
+# Widen this when CONTENT_DIR is outside the state directory, e.g. when the
+# tree is generated straight into Motsognir's document root.
+#ReadWritePaths=/var/gopher
 
 MemoryMax=1G

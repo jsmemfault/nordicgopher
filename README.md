@@ -95,7 +95,8 @@ instead — the on-disk `gophermap` format is the Bucktooth/Gophernicus one.
 | `internal/httpcache` | ETag-conditional fetch cache |
 | `internal/ingest/*` | One package per source |
 | `internal/ingest/ncsdocs` | The documentation ingest: toctree graph, label resolution |
-| `internal/search` | Type-7 backend |
+| `internal/search` | Type-7 backend for the standalone server |
+| `internal/index` | Inverted index, for the search CGI |
 
 ### The documentation ingest
 
@@ -160,15 +161,18 @@ corrupting it. Everything the ingesters write as text is named `.txt`.
 - `ngconv` — convert one Markdown or RST file to text and print it. This is
   the fastest way to see a conversion bug:
   `./bin/ngconv -base https://github.com/org/repo/blob/main/README.md README.md`
+- `ngsearch` — the search CGI, for serving the tree from another gopher
+  daemon. Run it by hand with terms as arguments to test it.
 
 ## Known limitations
 
 - Markdown inside `<details>` blocks is indented in the source and is emitted
   as a code block, so raw markup shows through. Uncommon in documentation,
   common in changelogs.
-- Search holds the corpus in memory and scans it per query -- about 37 ms
-  across 12 MB. Still a scan, not an index; the intended replacement is an
-  SQLite FTS5 index built during ingest.
+- The standalone server holds the corpus in memory and scans it per query,
+  about 37 ms across 12 MB. The CGI path uses a real inverted index instead
+  (~30 ms per cold process), but matches by token prefix rather than
+  substring, so `nrf54` finds `nrf54l15` while `54l15` does not.
 - Wide tables stay wide. A 160-column grid table is 160 columns in the mirror
   too, because narrowing it would destroy the alignment that makes it a table.
 - Substitutions inside table cells are left unexpanded (38 pages), for the
@@ -186,16 +190,20 @@ corrupting it. Everything the ingesters write as text is named `.txt`.
 
 ## Next
 
+The tree can also be served by an existing Motsognir instance, with search
+as a CGI — see [DEPLOY.md](DEPLOY.md). That trades a dedicated hostname for
+port 70, because Gopher has no `Host` header and therefore no name-based
+virtual hosting.
+
 1. **Zephyr documentation**, which would resolve the cross-tree includes and
    the `:zephyr:` roles that currently lose their targets.
    `docs.zephyrproject.org` serves `objects.inv` to plain clients, and the
    source is on GitHub; the ingester generalises with little more than a
    second `Config`.
-2. **FTS5 search index** built at ingest time.
-3. **nrfxlib, MCUboot and TF-M docs**, which live in sibling `doc/` trees in
+2. **nrfxlib, MCUboot and TF-M docs**, which live in sibling `doc/` trees in
    the same repository and reuse the ingester as-is.
-4. **The gated web properties**, once access is settled.
-5. **Gemini** over the same tree — nearly free once the content model exists,
+3. **The gated web properties**, once access is settled.
+4. **Gemini** over the same tree — nearly free once the content model exists,
    and its link handling suits documentation better than Gopher's.
 
 ## Provenance and attribution

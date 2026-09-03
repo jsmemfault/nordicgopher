@@ -85,9 +85,67 @@ func TestGophermapRoundTrip(t *testing.T) {
 		t.Fatalf("round trip changed length: %d -> %d", len(in), len(out))
 	}
 	for i := range in {
-		if in[i].Type != out[i].Type || in[i].Display != out[i].Display || in[i].Selector != out[i].Selector {
+		if in[i].Type != out[i].Type || in[i].Display != out[i].Display {
 			t.Errorf("item %d: %+v -> %+v", i, in[i], out[i])
 		}
+		// An informational line's selector is a placeholder that clients
+		// ignore, so it is not required to survive a round trip.
+		if in[i].Type != TypeInfo && in[i].Selector != out[i].Selector {
+			t.Errorf("item %d selector: %q -> %q", i, in[i].Selector, out[i].Selector)
+		}
+	}
+}
+
+// motsognirItemType reproduces how Motsognir reads a gophermap line: the
+// first character of a non-empty line is the item type, and only a blank line
+// is treated as informational. It does NOT infer the type from the absence of
+// a tab, which Bucktooth and Gophernicus do.
+//
+// See explodegophermapline() in motsognir.c.
+func motsognirItemType(line string) byte {
+	if line == "" {
+		return 'i'
+	}
+	return line[0]
+}
+
+func TestFormatIsMotsognirCompatible(t *testing.T) {
+	// A generated tree has to be servable by the Motsognir instance already
+	// running on the deployment host. Every line must therefore begin with a
+	// real item type: a bare banner line would be served as an item of type
+	// ' ' or '=' and render as garbage.
+	m := Menu{
+		Info(""),
+		Info("  nordicgopher"),
+		Info("  ============================================"),
+		Info("----------------------------------------------"),
+		Info("1024 bytes of prose that must not look like a menu item"),
+		Link(TypeMenu, "Docs", "/nrf/ncs/"),
+		Link(TypeText, "About", "/nrf/about.txt"),
+		URL("Source", "https://example.com/"),
+	}
+	var buf bytes.Buffer
+	if err := FormatGophermap(&buf, m); err != nil {
+		t.Fatal(err)
+	}
+
+	valid := map[byte]bool{'i': true, '0': true, '1': true, '3': true,
+		'5': true, '7': true, '9': true, 'g': true, 'I': true, 'h': true}
+	for n, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		got := motsognirItemType(line)
+		if !valid[got] {
+			t.Errorf("line %d would be item type %q under Motsognir: %q", n, got, line)
+		}
+	}
+}
+
+func TestFormatInfoLinesCarryTheTypeAndATab(t *testing.T) {
+	var buf bytes.Buffer
+	FormatGophermap(&buf, Menu{Info("hello")})
+	// The tab matters too: with none, a tab-inferring server would read the
+	// whole line as a display string including the leading "i".
+	if got := buf.String(); got != "ihello\t\n" {
+		t.Errorf("got %q, want %q", got, "ihello\t\n")
 	}
 }
 

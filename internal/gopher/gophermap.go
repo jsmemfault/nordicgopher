@@ -54,12 +54,21 @@ func ParseGophermap(r io.Reader) (Menu, error) {
 }
 
 // FormatGophermap renders a menu back into the on-disk format.
+//
+// Informational lines are written with an explicit "i" type and a trailing
+// tab rather than as bare text. Bucktooth and Gophernicus infer the type from
+// the absence of a tab, but Motsognir does not: it reads the first character
+// of every non-empty line as the item type, so a bare banner line would be
+// served as an item of type ' ' or '='. Being explicit is valid in all three,
+// and it is what lets this tree be served by an existing Motsognir instance
+// instead of by this server.
 func FormatGophermap(w io.Writer, m Menu) error {
 	bw := bufio.NewWriter(w)
 	for _, it := range m {
 		if it.Type == TypeInfo && it.Host == "error.host" {
+			bw.WriteByte(byte(TypeInfo))
 			bw.WriteString(clean(it.Display))
-			bw.WriteString("\n")
+			bw.WriteString("\t\n")
 			continue
 		}
 		bw.WriteByte(byte(it.Type))

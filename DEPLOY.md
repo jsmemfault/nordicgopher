@@ -204,6 +204,138 @@ rather than failing the rebuild, so a partial run republishes the previous
 content for whatever it could not refresh. On a cold cache there is nothing
 to fall back to, which is why the first run is the one to watch.
 
+## Serving the tree from Motsognir instead
+
+The generated tree is plain gophermap-and-text files, so an existing
+Motsognir instance can serve it and the standalone server becomes optional.
+The reason to do this is **port 70**: links stop carrying `:7070`, which is
+what gets dropped when someone copies a link into a chat or a mailing list.
+
+### What Gopher cannot do
+
+There is no `Host` header in RFC 1436 — a client sends only a selector — so
+Gopher has no name-based virtual hosting. Two hostnames on one address and
+port are indistinguishable to the server. That is why `jonsharp.net` and
+`frstcomputer.com` need separate addresses, and it means:
+
+**`nrf.jonsharp.net` cannot be its own hole on port 70 of a shared address.**
+
+Served from Motsognir, the mirror is a subdirectory of the existing hole:
+
+```
+gopher://jonsharp.net/1/nrf/
+```
+
+and `nrf.jonsharp.net` resolves to the same address and serves the personal
+root menu. Keeping the dedicated hostname means keeping a dedicated port or a
+dedicated address; there is no third option.
+
+### The one dialect difference
+
+Motsognir reads the **first character of every non-empty line** as the item
+type. Bucktooth and Gophernicus infer `i` from a line having no tab;
+Motsognir does not, so a bare banner line would be served as an item of type
+`' '` or `'='`. The generator therefore writes informational lines with an
+explicit `i` and a trailing tab, which is valid for all three.
+`TestFormatIsMotsognirCompatible` reproduces Motsognir's parser to keep that
+from regressing.
+
+Otherwise the formats agree. When a line leaves server and port empty,
+Motsognir fills in its configured `gopherhostname` and `gopherport`, which is
+exactly what the generator relies on.
+
+### Motsognir configuration
+
+```
+GopherCgiSupport=1
+```
+
+Search is a CGI, and without this Motsognir serves the script as a text file
+instead of executing it.
+
+### Generating and installing the tree
+
+Generate it inside Motsognir's document root, with every selector carrying
+the prefix:
+
+```sh
+ngingest \
+    -out /var/gopher/nrf \
+    -selector-prefix /nrf \
+    -search-cgi search.cgi \
+    -host jonsharp.net \
+    -admin jon@jonsharp.net
+```
+
+Through the unit, put the same in `/etc/nordicgopher/env`:
+
+```sh
+CONTENT_DIR=/var/gopher/nrf
+INGEST_EXTRA_ARGS=-selector-prefix /nrf -search-cgi search.cgi
+```
+
+and widen `ReadWritePaths` in `nordicgopher-ingest.service` to cover
+`/var/gopher`, since `ProtectSystem=strict` otherwise makes it read-only.
+
+Note the prefix applies to **selectors, not to the directory layout**: the
+tree is self-contained and installs at `<document root>/nrf`. Baking the
+prefix into the layout would nest it twice, and would drop a root
+`gophermap` and an `about.txt` into the hosting hole's own directory —
+overwriting its front page. For the same reason `caps.txt` and `robots.txt`
+are not generated when a prefix is set: they belong at the root of the hole,
+which is yours, not the mirror's. Add the mirror's paths to your own
+`robots.txt` if you want crawlers to skip the copies.
+
+Finally, link it from the hosting hole's root gophermap:
+
+```
+1nRF Connect SDK documentation (mirror)	/nrf/
+```
+
+### Search as a CGI
+
+`ngingest` writes `search.cgi` into the tree itself, because its selector has
+to be inside the tree and the tree is replaced wholesale on every ingest — a
+hand-placed script would be deleted by the next run. The wrapper `exec`s
+`ngsearch` with the paths that run produced.
+
+A CGI starts fresh per query, so it cannot hold the corpus in memory the way
+the standalone server does. Instead `ngingest` writes `search.idx`, an
+inverted index (about 930 KB for 734 documents, 23,555 terms), and the CGI
+reads that. Measured cost per query, cold process each time:
+
+| | |
+| --- | --- |
+| Process start alone | 14 ms |
+| + loading the index | 26 ms |
+| + 50 result snippets | 30 ms |
+
+which is slightly faster than the in-process server, whose advantage in
+holding the corpus is offset by having to scan it.
+
+One behavioural change comes with the index. The scan matched a term
+**anywhere in a word**; the index matches **by token prefix**, since storing
+every suffix would be far larger. So `nrf54` still finds `nrf54l15` and
+`nrf54h20`, but `54l15` no longer finds `nrf54l15`. Identifiers are indexed
+whole and also split on underscores, so `SB_CONFIG_NETCORE_EMPTY` is findable
+by its full name and by `netcore`.
+
+### Running both during a transition
+
+One tree can be served by both daemons, so what you check on 7070 is
+byte-identical to what Motsognir serves. Point the standalone server at the
+prefixed tree:
+
+```sh
+nordicgopher -root /var/gopher/nrf -prefix /nrf \
+             -search-selector /nrf/search.cgi \
+             -host nrf.jonsharp.net -port 7070 -addr <address>:7070
+```
+
+`-prefix` strips the prefix before resolving a selector against the tree, and
+`-search-selector` points the built-in search at the same selector Motsognir
+executes the CGI for. Retire the standalone server once the CGI is proven.
+
 ## Public exposure
 
 Three things are worth understanding before this is reachable from the

@@ -201,15 +201,21 @@ func match(d *document, terms []string) (hit, bool) {
 			score += 25
 		}
 	}
-	return hit{doc: d, context: context(d.body, terms), score: score}, true
+	return hit{doc: d, context: Snippet(d.body, terms), score: score}, true
 }
 
-// context returns a snippet for the result: the first matching line of actual
-// prose. Headings, their underlines and the converter's footnote list all
-// match terms readily but say nothing useful in a result list, so a line has
-// to look like a sentence to be chosen. If none does, the first match is used
+// Snippet quotes a line from a document for a result listing: the first
+// matching line of actual prose.
+//
+// Headings, their underlines and the converter's footnote list all match
+// terms readily but say nothing useful in a result list, so a line has to
+// look like a sentence to be chosen. If none does, the first match is used
 // rather than showing nothing.
-func context(body string, terms []string) string {
+//
+// This is exported because the search CGI shows the same results as the
+// built-in handler, and two implementations of "which line to quote" would
+// drift apart.
+func Snippet(body string, terms []string) string {
 	fallback := ""
 	for i, l := range strings.Split(body, "\n") {
 		if i == 0 {

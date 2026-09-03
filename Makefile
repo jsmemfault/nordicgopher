@@ -42,6 +42,7 @@ build: check-go
 	$(GO) build -o $(BIN)/nordicgopher ./cmd/nordicgopher
 	$(GO) build -o $(BIN)/ngingest     ./cmd/ngingest
 	$(GO) build -o $(BIN)/ngconv       ./cmd/ngconv
+	$(GO) build -o $(BIN)/ngsearch     ./cmd/ngsearch
 
 test:
 	$(GO) test ./...
@@ -86,6 +87,8 @@ dist: check-go
 	    $(GO) build -trimpath -ldflags='-s -w' -o dist/ngingest     ./cmd/ngingest
 	CGO_ENABLED=0 GOOS=$(DIST_OS) GOARCH=$(DIST_ARCH) \
 	    $(GO) build -trimpath -ldflags='-s -w' -o dist/ngconv       ./cmd/ngconv
+	CGO_ENABLED=0 GOOS=$(DIST_OS) GOARCH=$(DIST_ARCH) \
+	    $(GO) build -trimpath -ldflags='-s -w' -o dist/ngsearch     ./cmd/ngsearch
 	cp deploy/*.service deploy/*.timer deploy/env.example deploy/install.sh dist/
 	cp data/artifacts.json dist/
 	@echo

@@ -28,6 +28,13 @@ type Server struct {
 	Port int    // port to advertise in menu lines
 	Log  *slog.Logger
 
+	// Prefix is the selector prefix the tree was generated for, e.g.
+	// "/nrf". It is stripped before a selector is resolved against Root, so
+	// a tree built to be served as a subdirectory of another gopherhole can
+	// also be served directly by this server. That lets one generated tree
+	// be checked here and served there, rather than maintaining two.
+	Prefix string
+
 	// MaxConns bounds connections served at once. Gopher has no keep-alive,
 	// so this is a cap on concurrent work rather than on visitors: it stops
 	// a flood of search queries, each of which scans the whole corpus, from
@@ -167,6 +174,14 @@ func (s *Server) resolve(selector string) (string, error) {
 	root, err := filepath.Abs(s.Root)
 	if err != nil {
 		return "", err
+	}
+	if p := strings.TrimSuffix(s.Prefix, "/"); p != "" {
+		switch {
+		case selector == p:
+			selector = "/"
+		case strings.HasPrefix(selector, p+"/"):
+			selector = strings.TrimPrefix(selector, p)
+		}
 	}
 	rel := path.Clean("/" + strings.TrimPrefix(selector, "/"))
 	full := filepath.Join(root, filepath.FromSlash(rel))

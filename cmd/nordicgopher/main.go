@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"nordicgopher/internal/gopher"
@@ -26,6 +27,11 @@ func main() {
 	root := flag.String("root", "content", "content tree to serve")
 	host := flag.String("host", "localhost", "hostname to advertise in menu lines")
 	port := flag.Int("port", 0, "port to advertise in menu lines (default: listen port)")
+	prefix := flag.String("prefix", "",
+		"selector prefix the tree was generated for, e.g. /nrf; stripped before lookup")
+	searchSel := flag.String("search-selector", "",
+		"selector that runs search; defaults to <prefix>/search. Point it at the tree's "+
+			"search.cgi to serve a Motsognir-targeted tree unchanged")
 	results := flag.Int("results", 50, "maximum search results")
 	maxDL := flag.Int64("max-download", 512<<20, "cap on a single proxied download in bytes")
 	maxConns := flag.Int("max-conns", gopher.DefaultMaxConns, "connections served at once")
@@ -60,10 +66,17 @@ func main() {
 		Log:        log,
 		MaxConns:   *maxConns,
 		LogClients: *logClients,
+		Prefix:     strings.TrimSuffix(*prefix, "/"),
 	}
 
+	sel := *searchSel
+	if sel == "" {
+		sel = srv.Prefix + "/search"
+	}
+	log.Info("search mounted", "selector", sel)
+
 	ix := &search.Index{Root: *root}
-	srv.Handle("/search", func(w io.Writer, _, query string) error {
+	srv.Handle(sel, func(w io.Writer, _, query string) error {
 		m, err := ix.Query(query, *results)
 		if err != nil {
 			return err
@@ -71,23 +84,24 @@ func main() {
 		return m.WriteTo(w, *host, advertised)
 	})
 
+	dlPrefix := srv.Prefix + "/dl/"
 	if *proxyDL {
 		proxy := &gopher.Proxy{
 			// The only reachable upstream. files.nordicsemi.com is the one
 			// public Nordic host that serves non-browser clients, and only
 			// its artifactory path is exposed.
-			Allow:         map[string]string{"/dl/": artifactory.Base},
+			Allow:         map[string]string{dlPrefix: artifactory.Base},
 			MaxBytes:      *maxDL,
 			MaxConcurrent: *proxyConc,
 			UserAgent:     "nordicgopher/0.2 (gopher mirror)",
 			HTTP:          &http.Client{Timeout: 30 * time.Minute},
 			Log:           log,
 		}
-		srv.Handle("/dl/", proxy.Handle)
+		srv.Handle(dlPrefix, proxy.Handle)
 	} else {
 		// Refuse rather than fall through to the content tree, where a /dl/
 		// selector would report a confusing "not found".
-		srv.Handle("/dl/", func(w io.Writer, _, _ string) error {
+		srv.Handle(dlPrefix, func(w io.Writer, _, _ string) error {
 			return gopher.WriteError(w, "downloads are not proxied by this server")
 		})
 	}

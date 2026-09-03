@@ -29,7 +29,7 @@ install -d -o "$USER" -g "$USER" -m 755 "$STATE" "$STATE/cache"
 install -d -o root -g "$USER" -m 750 "$CONF"
 
 echo "==> binaries"
-for b in nordicgopher ngingest ngconv; do
+for b in nordicgopher ngingest ngconv ngsearch; do
     install -o root -g root -m 755 "$b" "$PREFIX/$b"
     echo "    $PREFIX/$b"
 done

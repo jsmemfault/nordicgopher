@@ -17,6 +17,7 @@ import (
 
 	"nordicgopher/internal/gopher"
 	"nordicgopher/internal/httpcache"
+	"nordicgopher/internal/index"
 	"nordicgopher/internal/ingest/artifactory"
 	"nordicgopher/internal/ingest/github"
 	"nordicgopher/internal/ingest/ncsdocs"
@@ -42,6 +43,14 @@ func main() {
 	mirrorMax := flag.Int64("mirror-max-bytes", 64<<20,
 		"largest artifact copied into the tree; larger ones stay proxied (0 = never copy)")
 	admin := flag.String("admin", "", "administrator contact published in caps.txt")
+	ngsearchPath := flag.String("ngsearch", "/usr/local/bin/ngsearch",
+		"path to the ngsearch binary, written into the generated CGI wrapper")
+	searchCGI := flag.String("search-cgi", "",
+		"filename of the search CGI to point the type-7 item at, e.g. search.cgi; "+
+			"empty uses this server's built-in /search handler")
+	prefix := flag.String("selector-prefix", "",
+		"prefix for every generated selector, e.g. /nrf when the tree is served as a "+
+			"subdirectory of an existing gopherhole")
 	host := flag.String("host", "", "public hostname, published in caps.txt")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
@@ -56,7 +65,8 @@ func main() {
 		out: *out, cache: *cache, catalog: *catalog, orgs: *orgs, only: *only,
 		maxRepos: *maxRepos, maxReleases: *maxReleases,
 		docsRef: *docsRef, maxDocs: *maxDocs, workers: *workers,
-		mirrorMax: *mirrorMax, admin: *admin, host: *host,
+		mirrorMax: *mirrorMax, admin: *admin, host: *host, prefix: *prefix,
+		searchCGI: *searchCGI, ngsearchPath: *ngsearchPath,
 		rawGap: *rawGap, retries: *retries,
 	}
 	if err := run(log, cfg); err != nil {
@@ -73,7 +83,8 @@ type options struct {
 	docsRef                         string
 	maxDocs, workers                int
 	mirrorMax                       int64
-	admin, host                     string
+	admin, host, prefix, searchCGI  string
+	ngsearchPath                    string
 	rawGap                          time.Duration
 	retries                         int
 }
@@ -92,7 +103,21 @@ func run(log *slog.Logger, opt options) error {
 	}
 	defer os.RemoveAll(staging)
 
+	// A prefix lets the tree be dropped into an existing gopherhole as a
+	// subdirectory. Selectors are absolute on the wire, so every one of them
+	// carries it, while the directory layout does not: the tree is
+	// self-contained and gets installed at <server root>/<prefix>.
+	prefix := strings.TrimSuffix(opt.prefix, "/")
+	if prefix != "" && !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	if prefix != "" {
+		log.Info("generating with a selector prefix", "prefix", prefix)
+	}
+
 	t := tree.New(staging)
+	t.Prefix = prefix
+
 	// Two clients over one cache directory. The API client is throttled
 	// because its budget is counted in requests per hour; the CDN client is
 	// paced only lightly, since its limit is about rate rather than volume.
@@ -115,6 +140,7 @@ func run(log *slog.Logger, opt options) error {
 			HTTP: hc,
 			Log:  log,
 			Cfg: github.Config{
+				Root:        prefix + "/github",
 				Orgs:        splitList(opt.orgs),
 				MaxRepos:    opt.maxRepos,
 				MaxReleases: opt.maxReleases,
@@ -137,7 +163,7 @@ func run(log *slog.Logger, opt options) error {
 				Repo:      "nrfconnect/sdk-nrf",
 				Ref:       opt.docsRef,
 				DocRoot:   "doc/nrf",
-				Root:      "/ncs",
+				Root:      prefix + "/ncs",
 				Entry:     "index",
 				Shortcuts: "shortcuts.txt",
 				Links:     "links.txt",
@@ -158,6 +184,7 @@ func run(log *slog.Logger, opt options) error {
 			HTTP: hc,
 			Log:  log,
 			Cfg: artifactory.Config{
+				Root:           prefix + "/files",
 				CatalogPath:    opt.catalog,
 				Verify:         true,
 				MirrorMaxBytes: opt.mirrorMax,
@@ -171,8 +198,8 @@ func run(log *slog.Logger, opt options) error {
 	}
 
 	root.Add(gopher.Blank())
-	root.Add(gopher.Link(gopher.TypeSearch, "Search this mirror", "/search"))
-	root.Add(gopher.Link(gopher.TypeText, "About this mirror, and what it does not include", "/about.txt"))
+	root.Add(gopher.Link(gopher.TypeSearch, "Search this mirror", searchSelector(opt, prefix)))
+	root.Add(gopher.Link(gopher.TypeText, "About this mirror, and what it does not include", prefix+"/about.txt"))
 	root.Add(gopher.Blank())
 	root.Add(gopher.Info(text.Rule("-", text.Width)))
 	root.Add(gopher.Info("Generated " + now.UTC().Format("2006-01-02 15:04 MST") +
@@ -184,12 +211,37 @@ func run(log *slog.Logger, opt options) error {
 	if err := t.WriteFile("/about.txt", about(now)); err != nil {
 		return err
 	}
-	if err := t.WriteFile("/caps.txt", caps(opt, now)); err != nil {
-		return err
+	// caps.txt and robots.txt are fetched from a hole's root by directories
+	// and crawlers, so they belong at the served root. When this tree is a
+	// subdirectory of somebody else's hole, that root is theirs, not ours.
+	if prefix == "" {
+		if err := t.WriteFile("/caps.txt", caps(opt, now)); err != nil {
+			return err
+		}
+		if err := t.WriteFile("/robots.txt", robots()); err != nil {
+			return err
+		}
+	} else {
+		log.Info("skipping caps.txt and robots.txt: they belong at the root of the hosting gopherhole, not in a subdirectory")
 	}
-	if err := t.WriteFile("/robots.txt", robots()); err != nil {
-		return err
+
+	if opt.searchCGI != "" {
+		if err := writeSearchCGI(t, opt, prefix, absOr(out)); err != nil {
+			return fmt.Errorf("writing search CGI: %w", err)
+		}
+		log.Info("search CGI written", "selector", searchSelector(opt, prefix))
 	}
+
+	// The index is built from the finished tree, so it must be written
+	// before the swap but after every ingester has run.
+	ix, err := index.Build(staging, prefix)
+	if err != nil {
+		return fmt.Errorf("building search index: %w", err)
+	}
+	if err := ix.WriteFile(filepath.Join(staging, "search.idx")); err != nil {
+		return fmt.Errorf("writing search index: %w", err)
+	}
+	log.Info("search index built", "documents", len(ix.Docs), "terms", ix.Terms())
 
 	if err := t.Swap(absOr(out)); err != nil {
 		return err
@@ -349,6 +401,46 @@ func robots() string {
 		"Allow: /",
 		"",
 	}, "\n")
+}
+
+// writeSearchCGI writes the wrapper that the hosting daemon executes.
+//
+// It lives inside the content tree because its selector must, and the tree is
+// replaced wholesale on every ingest -- so a hand-placed script would be
+// deleted by the next run. Generating it also means the paths it passes are
+// always the ones this run produced.
+func writeSearchCGI(t *tree.Tree, opt options, prefix, served string) error {
+	name := strings.TrimPrefix(opt.searchCGI, "/")
+	script := fmt.Sprintf(`#!/bin/sh
+# Generated by ngingest -- do not edit; the next ingest overwrites it.
+#
+# Motsognir executes a selector ending in .cgi and copies stdout to the
+# client, passing the type-7 terms in QUERY_STRING_SEARCH.
+exec %s     -index %s/search.idx     -root %s     -prefix %s
+`, shellQuote(opt.ngsearchPath), shellQuote(served), shellQuote(served), shellQuote(prefix))
+
+	if err := t.WriteFile(prefix+"/"+name, script); err != nil {
+		return err
+	}
+	// It is executed, not read.
+	return os.Chmod(filepath.Join(t.Root, name), 0o755)
+}
+
+// shellQuote makes a path safe inside the generated script.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'''`) + "'"
+}
+
+// searchSelector points the type-7 item at whatever will answer queries: this
+// server's built-in handler, or the CGI that Motsognir executes.
+func searchSelector(opt options, prefix string) string {
+	if opt.searchCGI != "" {
+		return prefix + "/" + strings.TrimPrefix(opt.searchCGI, "/")
+	}
+	return prefix + "/search"
 }
 
 func splitList(s string) []string {

@@ -20,12 +20,29 @@ import (
 // Tree is a content tree rooted at a directory.
 type Tree struct {
 	Root string
+
+	// Prefix is the selector prefix the tree will be served under, e.g.
+	// "/nrf". It is a wire concept only and is stripped when mapping a
+	// selector to a path: the generated directory is self-contained and gets
+	// installed at <server root>/nrf, so baking the prefix into the layout
+	// would nest it a second time. Keeping it out of the layout also keeps
+	// the tree from writing a root gophermap or an about.txt over the files
+	// of the hole it is being installed into.
+	Prefix string
 }
 
 func New(root string) *Tree { return &Tree{Root: root} }
 
 func (t *Tree) path(selector string) string {
-	rel := strings.TrimPrefix(filepath.ToSlash(selector), "/")
+	rel := filepath.ToSlash(selector)
+	if p := strings.TrimSuffix(t.Prefix, "/"); p != "" {
+		if rel == p {
+			rel = "/"
+		} else {
+			rel = strings.TrimPrefix(rel, p+"/")
+		}
+	}
+	rel = strings.TrimPrefix(rel, "/")
 	return filepath.Join(t.Root, filepath.FromSlash(rel))
 }
 

@@ -23,7 +23,8 @@ ExecStart=/usr/local/bin/nordicgopher \
     -addr ${BIND_ADDRESS}:${PORT} \
     -host ${PUBLIC_HOST} \
     -port ${PORT} \
-    -root /var/lib/nordicgopher/content \
+    -root ${CONTENT_DIR} \
+    -prefix ${SELECTOR_PREFIX} \
     -max-conns 64 \
     -proxy-concurrency 2
 
@@ -52,6 +53,8 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 ReadOnlyPaths=/var/lib/nordicgopher
+# Widen this when CONTENT_DIR is outside the state directory.
+#ReadOnlyPaths=/var/gopher
 
 # The server holds the text corpus in memory to answer searches; 12 MB of
 # content sits comfortably inside this.
