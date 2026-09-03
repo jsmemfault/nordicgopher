@@ -9,6 +9,9 @@ source. It is unofficial and not affiliated with Nordic Semiconductor ASA.
 
 Deployment is documented separately in [DEPLOY.md](DEPLOY.md).
 
+Building needs **Go 1.21 or newer** (`log/slog`). The deployment host needs no
+Go at all -- `make dist` cross-compiles a static binary.
+
 ## Quick start
 
 ```sh

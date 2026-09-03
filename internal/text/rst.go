@@ -3,7 +3,6 @@ package text
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -482,7 +481,7 @@ func (c *rstConv) directive(lines []string, i int, m []string) int {
 		// its own passages, paired with :start-after: and :end-before:. The
 		// stack check is what stops that from recursing without bound, and
 		// what stops a genuine cycle between two files.
-		if slices.Contains(c.includeStack, arg) && opts["start-after"] == "" && opts["start-line"] == "" {
+		if c.including(arg) && opts["start-after"] == "" && opts["start-line"] == "" {
 			return end
 		}
 		body, ok := c.o.Include(arg)
@@ -832,7 +831,7 @@ func (c *rstConv) substitute(s string) string {
 	if len(c.o.Substitutions) == 0 {
 		return s
 	}
-	for range 3 { // substitutions may nest a level or two
+	for i := 0; i < 3; i++ { // substitutions may nest a level or two
 		before := s
 		s = reRSTSubstRef.ReplaceAllStringFunc(s, func(m string) string {
 			name := reRSTSubstRef.FindStringSubmatch(m)[1]
@@ -846,6 +845,16 @@ func (c *rstConv) substitute(s string) string {
 		}
 	}
 	return s
+}
+
+// including reports whether an include path is already being expanded.
+func (c *rstConv) including(path string) bool {
+	for _, p := range c.includeStack {
+		if p == path {
+			return true
+		}
+	}
+	return false
 }
 
 // logMissing records an unresolvable include as a visible marker. Silently

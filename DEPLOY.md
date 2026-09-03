@@ -39,9 +39,29 @@ protect in transit, but do not add anything that isn't.
 
 ## Install
 
-On your workstation, build for the instance's architecture. Check which you
-need with `uname -m` on the host: `x86_64` means amd64, `aarch64` means
-arm64 (Graviton).
+**The host needs no Go toolchain, and you should not build there.** The
+binaries are statically linked with `CGO_ENABLED=0`, so they are built on
+your workstation and copied over. Building from source needs Go 1.21 or newer
+(`log/slog`), and a distribution's packaged Go is often older -- Amazon Linux
+2 ships 1.20, which cannot compile this at all. The host needs only `ssh`,
+`tar` and systemd.
+
+### One command
+
+From the repository on your workstation:
+
+```sh
+make deploy DEPLOY_HOST=ec2-user@nrf.jonsharp.net              # amd64
+make deploy DEPLOY_HOST=ec2-user@nrf.jonsharp.net DIST_ARCH=arm64
+```
+
+That cross-compiles, copies `dist/` over, and runs the installer under
+`sudo`. Then continue at [Configure](#configure).
+
+### By hand
+
+Build for the instance's architecture. Check which you need with `uname -m`
+on the host: `x86_64` means amd64, `aarch64` means arm64 (Graviton).
 
 ```sh
 make dist                      # linux/amd64, the default

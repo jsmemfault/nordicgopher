@@ -218,7 +218,7 @@ func (in *Ingester) fetchAll(paths []string) (map[string]string, error) {
 		started = time.Now()
 	)
 
-	for range workers {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
