@@ -1,0 +1,7 @@
+# Generated content tree and its rollback copy
+/content/
+/content.prev/
+# Conditional-request cache
+/.cache/
+# Build output
+/bin/

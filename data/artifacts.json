@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Curated catalogue of public artifacts on files.nordicsemi.com.",
+    "Anonymous callers can list Artifactory repositories and each repository root,",
+    "but deeper listing requires authentication (api/storage below the root returns",
+    "404 and ?list&deep=1 returns 403). Downloads by known path are open, so the",
+    "download tree is curated here rather than crawled. Paths are relative to",
+    "https://files.nordicsemi.com/artifactory/ and are verified at ingest time."
+  ],
+  "groups": [
+    {
+      "title": "nrfutil",
+      "notes": "The unified Nordic command line tool. Install nrfutil first, then use 'nrfutil install <command>' to add device, toolchain-manager and other subcommands.",
+      "items": [
+        { "name": "nrfutil - Windows x86_64", "path": "swtools/external/nrfutil/executables/x86_64-pc-windows-msvc/nrfutil.exe" },
+        { "name": "nrfutil - Linux x86_64",   "path": "swtools/external/nrfutil/executables/x86_64-unknown-linux-gnu/nrfutil" },
+        { "name": "nrfutil - macOS arm64",    "path": "swtools/external/nrfutil/executables/aarch64-apple-darwin/nrfutil" },
+        { "name": "nrfutil - macOS x86_64",   "path": "swtools/external/nrfutil/executables/x86_64-apple-darwin/nrfutil" }
+      ]
+    }
+  ]
+}

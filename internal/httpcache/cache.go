@@ -1,0 +1,169 @@
+// Package httpcache is a small conditional-request cache for ingesters.
+//
+// The mirror is rebuilt on a schedule, and most upstream content does not
+// change between runs. Storing the ETag and revalidating turns a nightly
+// rebuild into a few hundred 304s, which keeps the job fast and keeps us
+// inside GitHub's rate limit without needing a token for modest trees.
+package httpcache
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+// Client fetches URLs, revalidating against an on-disk cache.
+type Client struct {
+	Dir       string        // cache directory
+	UserAgent string        // sent on every request; identifies the mirror
+	MinGap    time.Duration // minimum interval between requests to be polite
+	HTTP      *http.Client
+	Log       *slog.Logger
+
+	mu   sync.Mutex
+	last time.Time
+
+	Hits, Misses, Revalidated int
+}
+
+type meta struct {
+	URL          string    `json:"url"`
+	ETag         string    `json:"etag,omitempty"`
+	LastModified string    `json:"last_modified,omitempty"`
+	Fetched      time.Time `json:"fetched"`
+	Status       int       `json:"status"`
+}
+
+func New(dir string) *Client {
+	return &Client{
+		Dir:       dir,
+		UserAgent: "nordicgopher/0.1 (+unofficial gopher mirror; contact repo owner)",
+		MinGap:    150 * time.Millisecond,
+		HTTP:      &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (c *Client) logger() *slog.Logger {
+	if c.Log != nil {
+		return c.Log
+	}
+	return slog.Default()
+}
+
+func (c *Client) key(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return filepath.Join(c.Dir, hex.EncodeToString(sum[:])[:32])
+}
+
+func (c *Client) throttle() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gap := time.Since(c.last); gap < c.MinGap {
+		time.Sleep(c.MinGap - gap)
+	}
+	c.last = time.Now()
+}
+
+// Get returns the body for url, using a conditional request when a cached
+// copy exists. Extra headers are applied to the request.
+func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
+	if err := os.MkdirAll(c.Dir, 0o755); err != nil {
+		return nil, err
+	}
+	base := c.key(url)
+
+	var m meta
+	cached := false
+	if b, err := os.ReadFile(base + ".meta"); err == nil {
+		if json.Unmarshal(b, &m) == nil {
+			cached = true
+		}
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range hdr {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	req.Header.Set("User-Agent", c.UserAgent)
+	if cached {
+		if m.ETag != "" {
+			req.Header.Set("If-None-Match", m.ETag)
+		}
+		if m.LastModified != "" {
+			req.Header.Set("If-Modified-Since", m.LastModified)
+		}
+	}
+
+	c.throttle()
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		// A cached body is better than a failed rebuild.
+		if cached {
+			if b, rerr := os.ReadFile(base + ".body"); rerr == nil {
+				c.logger().Warn("upstream unreachable, serving cached copy", "url", url, "err", err)
+				c.Hits++
+				return b, nil
+			}
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotModified && cached {
+		c.Revalidated++
+		return os.ReadFile(base + ".body")
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: %s: %s", url, resp.Status, snippet(body))
+	}
+
+	c.Misses++
+	os.WriteFile(base+".body", body, 0o644)
+	nm, _ := json.Marshal(meta{
+		URL:          url,
+		ETag:         resp.Header.Get("ETag"),
+		LastModified: resp.Header.Get("Last-Modified"),
+		Fetched:      time.Now(),
+		Status:       resp.StatusCode,
+	})
+	os.WriteFile(base+".meta", nm, 0o644)
+	return body, nil
+}
+
+// GetJSON fetches and decodes a JSON document.
+func (c *Client) GetJSON(url string, hdr http.Header, v any) error {
+	b, err := c.Get(url, hdr)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
+
+// Stats renders cache counters for the ingest log.
+func (c *Client) Stats() string {
+	return fmt.Sprintf("fetched=%d revalidated=%d stale-served=%d", c.Misses, c.Revalidated, c.Hits)
+}
+
+func snippet(b []byte) string {
+	if len(b) > 200 {
+		b = b[:200]
+	}
+	return string(b)
+}
