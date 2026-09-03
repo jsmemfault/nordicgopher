@@ -4,7 +4,7 @@ CONTENT ?= content
 ADDR    ?= 127.0.0.1:7070
 HOST    ?= localhost
 
-.PHONY: all build test vet fmt ingest serve run clean
+.PHONY: all build test vet fmt ingest ingest-docs serve run clean
 
 all: build test
 
@@ -26,6 +26,11 @@ fmt:
 # 60 to 5000 requests/hour, which is what a full run needs.
 ingest:
 	$(GO) run ./cmd/ngingest -out $(CONTENT)
+
+# The documentation ingest alone. Needs no token: one API request for the git
+# tree, then the source files come from the CDN.
+ingest-docs:
+	$(GO) run ./cmd/ngingest -only ncsdocs -out $(CONTENT)
 
 serve:
 	$(GO) run ./cmd/nordicgopher -addr $(ADDR) -host $(HOST) -root $(CONTENT)

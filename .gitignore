@@ -1,6 +1,8 @@
 # Generated content tree and its rollback copy
 /content/
 /content.prev/
+# Staging directories, if a run was killed before it could clean up
+/.ngingest-*/
 # Conditional-request cache
 /.cache/
 # Build output

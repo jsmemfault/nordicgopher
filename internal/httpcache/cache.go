@@ -17,10 +17,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Client fetches URLs, revalidating against an on-disk cache.
+// Client fetches URLs, revalidating against an on-disk cache. It is safe for
+// concurrent use: cache entries are keyed by URL hash so writers never
+// collide, the throttle is serialised, and the counters are atomic.
 type Client struct {
 	Dir       string        // cache directory
 	UserAgent string        // sent on every request; identifies the mirror
@@ -31,7 +34,7 @@ type Client struct {
 	mu   sync.Mutex
 	last time.Time
 
-	Hits, Misses, Revalidated int
+	hits, misses, revalidated atomic.Int64
 }
 
 type meta struct {
@@ -64,6 +67,9 @@ func (c *Client) key(url string) string {
 }
 
 func (c *Client) throttle() {
+	if c.MinGap <= 0 {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if gap := time.Since(c.last); gap < c.MinGap {
@@ -114,7 +120,7 @@ func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
 		if cached {
 			if b, rerr := os.ReadFile(base + ".body"); rerr == nil {
 				c.logger().Warn("upstream unreachable, serving cached copy", "url", url, "err", err)
-				c.Hits++
+				c.hits.Add(1)
 				return b, nil
 			}
 		}
@@ -123,7 +129,7 @@ func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified && cached {
-		c.Revalidated++
+		c.revalidated.Add(1)
 		return os.ReadFile(base + ".body")
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -131,10 +137,22 @@ func (c *Client) Get(url string, hdr http.Header) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		// Rate limiting and upstream faults are transient. A mirror would
+		// rather republish its last good copy than fail the run, and being
+		// rate limited is the moment that matters most: the cached body is
+		// there precisely because the resource was fetched before.
+		if cached && retryable(resp.StatusCode) {
+			if b, rerr := os.ReadFile(base + ".body"); rerr == nil {
+				c.logger().Warn("upstream returned a transient error, serving cached copy",
+					"url", url, "status", resp.Status)
+				c.hits.Add(1)
+				return b, nil
+			}
+		}
 		return nil, fmt.Errorf("GET %s: %s: %s", url, resp.Status, snippet(body))
 	}
 
-	c.Misses++
+	c.misses.Add(1)
 	os.WriteFile(base+".body", body, 0o644)
 	nm, _ := json.Marshal(meta{
 		URL:          url,
@@ -158,7 +176,18 @@ func (c *Client) GetJSON(url string, hdr http.Header, v any) error {
 
 // Stats renders cache counters for the ingest log.
 func (c *Client) Stats() string {
-	return fmt.Sprintf("fetched=%d revalidated=%d stale-served=%d", c.Misses, c.Revalidated, c.Hits)
+	return fmt.Sprintf("fetched=%d revalidated=%d stale-served=%d",
+		c.misses.Load(), c.revalidated.Load(), c.hits.Load())
+}
+
+// retryable reports whether a status is worth falling back to cache for:
+// rate limiting, request timeouts, and server-side faults.
+func retryable(status int) bool {
+	switch status {
+	case http.StatusForbidden, http.StatusTooManyRequests, http.StatusRequestTimeout:
+		return true
+	}
+	return status >= 500
 }
 
 func snippet(b []byte) string {

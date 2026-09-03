@@ -18,6 +18,7 @@ import (
 	"nordicgopher/internal/httpcache"
 	"nordicgopher/internal/ingest/artifactory"
 	"nordicgopher/internal/ingest/github"
+	"nordicgopher/internal/ingest/ncsdocs"
 	"nordicgopher/internal/text"
 	"nordicgopher/internal/tree"
 )
@@ -29,7 +30,10 @@ func main() {
 	orgs := flag.String("orgs", "NordicSemiconductor,nrfconnect", "GitHub organisations to mirror")
 	maxRepos := flag.Int("max-repos", 15, "repositories per organisation (0 = all)")
 	maxReleases := flag.Int("max-releases", 8, "release notes per repository")
-	only := flag.String("only", "", "run a single ingester: github or files")
+	only := flag.String("only", "", "run a single ingester: github, files or ncsdocs")
+	docsRef := flag.String("docs-ref", "main", "sdk-nrf branch or tag to read documentation from")
+	maxDocs := flag.Int("max-docs", 0, "documentation pages to mirror (0 = all reachable)")
+	workers := flag.Int("workers", 8, "concurrent source fetches for documentation")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
 
@@ -39,24 +43,49 @@ func main() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	if err := run(log, *out, *cache, *catalog, *orgs, *only, *maxRepos, *maxReleases); err != nil {
+	cfg := options{
+		out: *out, cache: *cache, catalog: *catalog, orgs: *orgs, only: *only,
+		maxRepos: *maxRepos, maxReleases: *maxReleases,
+		docsRef: *docsRef, maxDocs: *maxDocs, workers: *workers,
+	}
+	if err := run(log, cfg); err != nil {
 		log.Error("ingest failed", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, out, cache, catalog, orgs, only string, maxRepos, maxReleases int) error {
-	now := time.Now()
+// options carries the command line, so adding an ingester does not mean
+// threading another parameter through run.
+type options struct {
+	out, cache, catalog, orgs, only string
+	maxRepos, maxReleases           int
+	docsRef                         string
+	maxDocs, workers                int
+}
 
-	staging, err := os.MkdirTemp(filepath.Dir(absOr(out)), ".ngingest-")
+func run(log *slog.Logger, opt options) error {
+	now := time.Now()
+	out, cache, only := opt.out, opt.cache, opt.only
+
+	// Staging must share a parent with the destination so the swap is an
+	// atomic rename rather than a copy.
+	parent := filepath.Dir(absOr(out))
+	cleanStaging(log, parent)
+	staging, err := os.MkdirTemp(parent, ".ngingest-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(staging)
 
 	t := tree.New(staging)
+	// The GitHub API is throttled; raw.githubusercontent.com is a CDN and is
+	// not, so documentation source is fetched flat out through its own client
+	// over the same cache directory.
 	hc := httpcache.New(cache)
 	hc.Log = log
+	raw := httpcache.New(cache)
+	raw.Log = log
+	raw.MinGap = 0
 
 	var root gopher.Menu
 	root.Add(banner()...)
@@ -66,9 +95,9 @@ func run(log *slog.Logger, out, cache, catalog, orgs, only string, maxRepos, max
 			HTTP: hc,
 			Log:  log,
 			Cfg: github.Config{
-				Orgs:        splitList(orgs),
-				MaxRepos:    maxRepos,
-				MaxReleases: maxReleases,
+				Orgs:        splitList(opt.orgs),
+				MaxRepos:    opt.maxRepos,
+				MaxReleases: opt.maxReleases,
 				Token:       firstEnv("GITHUB_TOKEN", "GH_TOKEN"),
 			},
 		}
@@ -79,11 +108,36 @@ func run(log *slog.Logger, out, cache, catalog, orgs, only string, maxRepos, max
 		root.Add(frag...)
 	}
 
+	if only == "" || only == "ncsdocs" {
+		ing := &ncsdocs.Ingester{
+			HTTP: hc,
+			Raw:  raw,
+			Log:  log,
+			Cfg: ncsdocs.Config{
+				Repo:      "nrfconnect/sdk-nrf",
+				Ref:       opt.docsRef,
+				DocRoot:   "doc/nrf",
+				Root:      "/ncs",
+				Entry:     "index",
+				Shortcuts: "shortcuts.txt",
+				Links:     "links.txt",
+				MaxDocs:   opt.maxDocs,
+				Workers:   opt.workers,
+				Token:     firstEnv("GITHUB_TOKEN", "GH_TOKEN"),
+			},
+		}
+		frag, err := ing.Run(t, now)
+		if err != nil {
+			return fmt.Errorf("ncsdocs: %w", err)
+		}
+		root.Add(frag...)
+	}
+
 	if only == "" || only == "files" {
 		ing := &artifactory.Ingester{
 			HTTP: hc,
 			Log:  log,
-			Cfg:  artifactory.Config{CatalogPath: catalog, Verify: true},
+			Cfg:  artifactory.Config{CatalogPath: opt.catalog, Verify: true},
 		}
 		frag, err := ing.Run(t, now)
 		if err != nil {
@@ -110,7 +164,7 @@ func run(log *slog.Logger, out, cache, catalog, orgs, only string, maxRepos, max
 	if err := t.Swap(absOr(out)); err != nil {
 		return err
 	}
-	log.Info("content tree written", "dir", out, "cache", hc.Stats())
+	log.Info("content tree written", "dir", out, "api", hc.Stats(), "raw", raw.Stats())
 	return nil
 }
 
@@ -179,6 +233,23 @@ The search item on the top-level menu matches words against every
 mirrored document.
 `
 	return tree.Page("About this mirror", body, "https://www.nordicsemi.com/", now)
+}
+
+// cleanStaging removes staging directories left behind by a run that was
+// killed before its own cleanup could happen. Without this they accumulate,
+// each holding a full copy of the tree.
+func cleanStaging(log *slog.Logger, parent string) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), ".ngingest-") {
+			p := filepath.Join(parent, e.Name())
+			log.Info("removing abandoned staging directory", "dir", p)
+			os.RemoveAll(p)
+		}
+	}
 }
 
 func splitList(s string) []string {
